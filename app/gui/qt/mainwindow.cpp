@@ -407,6 +407,10 @@ void MainWindow::setupWindowStructure() {
 
 
     SonicPiScintilla *workspace = new SonicPiScintilla(lexer, theme);
+    QString vimMode = QProcessEnvironment::systemEnvironment().value("SONIC_PI_VIM_MODE", "");
+    if (vimMode.length() != 0){
+        workspace->setVimMode(true);
+    }
 
     //tab completion when in list
     QShortcut *indentLine = new QShortcut(QKeySequence("Tab"), workspace);

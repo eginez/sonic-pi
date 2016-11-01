@@ -21,6 +21,9 @@
 #include <Qsci/qscicommandset.h>
 #include <Qsci/qscilexer.h>
 
+
+#define LAMBDA(x) ([=](SonicPiScintilla *that) { x })
+
 SonicPiScintilla::SonicPiScintilla(SonicPiLexer *lexer, SonicPiTheme *theme)
   : QsciScintilla()
 {
@@ -32,8 +35,11 @@ SonicPiScintilla::SonicPiScintilla(SonicPiLexer *lexer, SonicPiTheme *theme)
   QSettings settings("sonic-pi.net", "gui-key-bindings");
 
 #if defined(Q_OS_MAC)
-  int SPi_CTRL = Qt::META;
-  int SPi_META = Qt::CTRL;
+ // int SPi_CTRL = Qt::META;
+ // int SPi_META = Qt::CTRL;
+  int SPi_META = Qt::META;
+  int SPi_CTRL = Qt::CTRL;
+
 #else
   int SPi_CTRL = Qt::CTRL;
   int SPi_META = Qt::ALT;
@@ -516,4 +522,124 @@ void SonicPiScintilla::dropEvent(QDropEvent *dropEvent)
     }
     insert(text);
   }
+}
+
+void SonicPiScintilla::vimReinterpretKeyEvent(QKeyEvent *e)
+{
+    QHash<int, std::function<void(SonicPiScintilla*)>> *vimDCmds = new QHash<int,std::function<void(SonicPiScintilla*)>>();
+    vimDCmds->insert(Qt::Key_D, LAMBDA(that->SendScintilla(QsciCommand::LineDelete); that->lastCommand = nullptr;));
+
+    QHash<int, std::function<void(SonicPiScintilla*)>> *vimVCmds = new QHash<int,std::function<void(SonicPiScintilla*)>>();
+    vimVCmds->insert(Qt::Key_J, LAMBDA(that->incrementSelection(1);));
+    vimVCmds->insert(Qt::Key_K, LAMBDA(that->incrementSelection(-1);));
+
+    QHash<int, std::function<void(SonicPiScintilla*)>> *vimRootCmds = new QHash<int,std::function<void(SonicPiScintilla*)>>();
+    vimRootCmds->insert(Qt::Key_0, LAMBDA(that->SendScintilla(SCI_HOME);));
+    vimRootCmds->insert(Qt::Key_O, LAMBDA(that->SendScintilla(QsciCommand::LineEnd); that->newLine();));
+    vimRootCmds->insert(Qt::Key_J, LAMBDA(that->SendScintilla(SCI_LINEDOWN);));
+    vimRootCmds->insert(Qt::Key_K, LAMBDA(that->SendScintilla(SCI_LINEUP);));
+    vimRootCmds->insert(Qt::Key_H, LAMBDA(that->SendScintilla(SCI_CHARLEFT);));
+    vimRootCmds->insert(Qt::Key_L, LAMBDA(that->SendScintilla(SCI_CHARRIGHT);));
+    vimRootCmds->insert(Qt::Key_E, LAMBDA(that->SendScintilla(QsciCommand::WordRight);));
+    vimRootCmds->insert(Qt::Key_B, LAMBDA(that->SendScintilla(QsciCommand::WordLeft);));
+    vimRootCmds->insert(Qt::Key_A|Qt::SHIFT, LAMBDA(that->SendScintilla(QsciCommand::LineEnd); that->isNormalMode = false;));
+    vimRootCmds->insert(Qt::Key_I|Qt::SHIFT, LAMBDA(that->SendScintilla(QsciCommand::Home); that->isNormalMode = false;));
+    vimRootCmds->insert(Qt::Key_G|Qt::SHIFT, LAMBDA(that->SendScintilla(QsciCommand::DocumentEnd);));
+    vimRootCmds->insert(Qt::Key_D,
+                        [=] (SonicPiScintilla *that) {
+                            if (that->hasSelectedText()){
+                                that->lastCommand = vimDCmds;
+                                return;
+                            }
+                            that->SendScintilla(QsciCommand::SelectionCut);
+                        });
+    vimRootCmds->insert(Qt::Key_I, LAMBDA(that->isNormalMode = false; that->setCaretWidth(5);));
+    vimRootCmds->insert(Qt::Key_U, LAMBDA(that->SendScintilla(QsciCommand::Undo);));
+    vimRootCmds->insert(Qt::Key_R|Qt::CTRL, LAMBDA(that->SendScintilla(QsciCommand::Redo);));
+    vimRootCmds->insert(Qt::Key_V|Qt::SHIFT,
+                        [=] (SonicPiScintilla *that) {
+                            int linenum, index;
+                            that->getCursorPosition(&linenum, &index);
+                            int len = that->text(linenum).length();
+                            that->setSelection(linenum, 0, linenum, len);
+                            that->lastCommand = vimVCmds;
+                        });
+    vimRootCmds->insert(Qt::Key_C|Qt::SHIFT, LAMBDA(that->cutLineFromPoint();));
+    vimRootCmds->insert(Qt::Key_Escape,
+                        [=] (SonicPiScintilla *that) {
+                            qDebug() << "clearing commands";
+                            that->lastCommand = nullptr;
+                            that->escapeAndCancelSelection();
+                            that->setCaretWidth(50);
+                        });
+
+
+
+    QHash<int, std::function<void(SonicPiScintilla*)>> *command = vimRootCmds;
+    if(lastCommand != nullptr) {
+        command = lastCommand;
+    }
+
+    if(command->contains(e->key()|e->modifiers())) {
+        std::function<void(SonicPiScintilla*)> action = command->value(e->key()|e->modifiers());
+        action(this);
+        return;
+    } else {
+        lastCommand = nullptr;
+    }
+
+    return;
+}
+
+void SonicPiScintilla::keyPressEvent(QKeyEvent *e)
+{
+    int key = e->key();
+    //qDebug() << e->key() << e->type() << e->modifiers() << e->text();
+    if (inVimMode() && this->isNormalMode) {
+        qDebug() << "key in normal mode";
+        vimReinterpretKeyEvent(e);
+        e->accept();
+        return;
+    }
+    QsciScintilla::keyPressEvent(e);
+}
+
+bool SonicPiScintilla::event(QEvent *e)
+{
+    if (!inVimMode()) {
+        return QsciScintilla::event(e);
+    }
+
+    if(e->type() == QEvent::ShortcutOverride) {
+        QKeyEvent *ke = static_cast<QKeyEvent *>(e);
+        if (ke->key() == Qt::Key_Escape ) {
+            qDebug() << "NORMAL MODE";
+            this->isNormalMode = true;
+            ke->accept();
+            return true;
+        }
+    }
+    return QsciScintillaBase::event(e);
+}
+
+void SonicPiScintilla::setVimMode(bool vimEnabled)
+{
+    this->isVimMode = vimEnabled;
+}
+
+bool SonicPiScintilla::inVimMode()
+{
+    return this->isVimMode;
+}
+
+void SonicPiScintilla::incrementSelection(int numLines)
+{
+    int lineFrom, indexFrom, lineTo, indexTo;
+    getSelection (&lineFrom, &indexFrom, &lineTo, &indexTo);
+    lineTo = std::max(0, lineTo + numLines);
+    int start = std::min(lineFrom, lineTo);
+    int finish = std::max(lineFrom, lineTo);
+
+    setSelection(start, indexFrom, finish, indexTo);
+
 }

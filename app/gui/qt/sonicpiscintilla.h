@@ -11,6 +11,7 @@
 // notice is included.
 //++
 
+#include <functional>
 #include <Qsci/qsciscintilla.h>
 #include "sonicpitheme.h"
 
@@ -59,11 +60,23 @@ class SonicPiScintilla : public QsciScintilla
     void zoomFontOut();
     void newLine();
     void replaceBuffer(QString content, int line, int index, int first_line);
+    void setVimMode(bool vimEnabled);
+    void incrementSelection(int numLines);
 
  private:
+    bool isVimMode = false;
+    bool isNormalMode = false;
     void addKeyBinding(QSettings &qs, int cmd, int key);
     void addOtherKeyBinding(QSettings &qs, int cmd, int key);
     void dragEnterEvent(QDragEnterEvent *pEvent);
     void dropEvent(QDropEvent *pEvent);
     void dragMoveEvent(QDragMoveEvent *event);
+    bool event(QEvent *e);
+    void keyPressEvent(QKeyEvent *e);
+    void vimReinterpretKeyEvent(QKeyEvent *e);
+    bool inVimMode();
+    QQueue<int> *vimChars;
+    int failed;
+    QHash<int, std::function<void(SonicPiScintilla*)>> *lastCommand = nullptr;
+
 };
